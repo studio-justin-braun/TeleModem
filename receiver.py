@@ -1,5 +1,6 @@
 import pyaudio
 import numpy as np
+import random
 
 # Frequenzzuweisung für Zeichen
 char_to_freq = {
@@ -14,19 +15,22 @@ char_to_freq = {
 freq_to_char = {v: k for k, v in char_to_freq.items()}  # Inverse Zuordnung
 
 # Parameter
-sample_rate = 44100  # Abtastrate
-clock_freq = 2900    # Frequenz für Takt
-baud_rate = 20       # Symbole pro Sekunde (je zwei Zeichen)
+sample_rate = 44100   # Abtastrate
+clock_freq = 2900     # Frequenz für Takt
+baud_rate = 20        # Zeichen pro Sekunde
+key_baud_rate = 10    # Übertragungsrate für den Schlüssel
 symbol_duration = 1 / baud_rate
 half_duration = symbol_duration / 2
-pair_size = 2        # Anzahl der Zeichen pro Symbol
-tolerance = 20       # Toleranz für Frequenzabgleich
+tolerance = 20        # Toleranz für Frequenzabgleich
 samples_per_half = int(sample_rate * half_duration)
+key_symbol_duration = 1 / key_baud_rate
+key_half_duration = key_symbol_duration / 2
+key_length = 8        # Länge des Schlüssels (Hex-Zeichen)
 start_marker_freq = 3000  # Startmarker Frequenz
 end_marker_freq = 3100   # Endmarker Frequenz
 
 # Funktion, um Frequenzen zu erkennen
-def detect_frequencies(signal, n=pair_size):
+def detect_frequencies(signal, n=1):
     window = np.hanning(len(signal))
     fft = np.fft.rfft(signal * window)
     frequencies = np.fft.rfftfreq(len(signal), 1 / sample_rate)
@@ -35,55 +39,85 @@ def detect_frequencies(signal, n=pair_size):
     return [frequencies[i] for i in top_indices]
 
 # Funktion, um Zeichen anhand der Frequenz zu identifizieren
-def match_char(frequency):
-    for freq, char in freq_to_char.items():
+def match_char(frequency, mapping=freq_to_char):
+    for freq, char in mapping.items():
         if abs(freq - frequency) <= tolerance:
             return char
     return None
 
+
+def build_freq_map(key):
+    rng = random.Random(key)
+    freqs = list(char_to_freq.values())
+    rng.shuffle(freqs)
+    return {freqs[i]: list(char_to_freq.keys())[i] for i in range(len(freqs))}
+
+
+def decrypt(hex_text, key):
+    """Entschlüsselt einen Hex-String mit dem übergebenen Schlüssel."""
+    # Nur gültige Hex-Zeichen verwenden, da Störungen einzelne Zeichen
+    # verfälschen können.
+    filtered = "".join(ch for ch in hex_text if ch.upper() in "0123456789ABCDEF")
+    # Ungerade Länge abschneiden, sonst schlägt fromhex fehl
+    if len(filtered) % 2:
+        filtered = filtered[:-1]
+    rng = random.Random(key)
+    data = bytes.fromhex(filtered)
+    result = bytes(b ^ rng.randrange(256) for b in data)
+    return result.decode("utf-8", errors="ignore")
+
 # Funktion zum Empfang der Nachricht
 def receive_message():
     p = pyaudio.PyAudio()
+    buffer_size = int(sample_rate * max(half_duration, key_half_duration))
     stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate,
-                    input=True, frames_per_buffer=samples_per_half)
+                    input=True, frames_per_buffer=buffer_size)
     print("\nWarte auf Nachricht...")
 
-    message = []
-    clock_detected = False
+    mode = "idle"
+    key_chars = ""
+    encrypted = ""
+    freq_map = None
 
     while True:
-        data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
-        detected_freqs = detect_frequencies(data, 1)
-        detected_freq = detected_freqs[0]
+        data = np.frombuffer(stream.read(buffer_size, exception_on_overflow=False), dtype=np.int16)
+        freq = detect_frequencies(data, 1)[0]
 
-        # Prüfen auf Startmarker
-        if abs(detected_freq - start_marker_freq) <= tolerance:
-            print("Nachricht empfangen!")
-            message = []  # Zurücksetzen der Nachricht
+        if mode == "idle":
+            if abs(freq - start_marker_freq) <= tolerance:
+                mode = "read_key_clock"
+                key_chars = ""
             continue
 
-        # Prüfen auf Endmarker
-        if abs(detected_freq - end_marker_freq) <= tolerance:
-            print("\nEmpfangene Nachricht:", ''.join(message))
-            message = []  # Zurücksetzen für neue Nachrichten
+        if mode == "read_key_clock":
+            if abs(freq - start_marker_freq) <= tolerance and len(key_chars) >= key_length:
+                freq_map = build_freq_map(key_chars)
+                encrypted = ""
+                mode = "message_clock"
+                print(f"Schlüssel erhalten: {key_chars}")
+                continue
+            if abs(freq - clock_freq) <= tolerance:
+                data = np.frombuffer(stream.read(int(sample_rate * key_half_duration), exception_on_overflow=False), dtype=np.int16)
+                f2 = detect_frequencies(data, 1)[0]
+                ch = match_char(f2)
+                if ch:
+                    key_chars += ch
             continue
 
-        # Prüfen auf Clock-Signal
-        if abs(detected_freq - clock_freq) <= tolerance:
-            clock_detected = True
-            continue
-
-        # Zeichen identifizieren, wenn ein Clock-Signal erkannt wurde
-        if clock_detected:
-            data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
-            freqs = detect_frequencies(data, pair_size)
-            clock_detected = False
-
-            for f in freqs:
-                char = match_char(f)
-                if char:
-                    message.append(char)
-                    print(f"Empfangen: {''.join(message)}", end="\r", flush=True)
+        if mode == "message_clock":
+            if abs(freq - end_marker_freq) <= tolerance:
+                if encrypted:
+                    text = decrypt(encrypted, key_chars)
+                    print(f"\nEmpfangene Nachricht: {text}")
+                mode = "idle"
+                continue
+            if abs(freq - clock_freq) <= tolerance:
+                data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
+                f2 = detect_frequencies(data, 1)[0]
+                ch = match_char(f2, freq_map)
+                if ch:
+                    encrypted += ch
+                    print(f"Empfangen: {encrypted}", end="\r", flush=True)
 
     stream.stop_stream()
     stream.close()

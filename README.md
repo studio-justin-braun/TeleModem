@@ -44,10 +44,15 @@ pip install pyaudio numpy alive_progress
   Empfänger die darauffolgende Information richtig zuordnet.
 - Eine Übertragung beginnt mit einem Startmarker (3000 Hz) und endet mit einem
   Endmarker (3100 Hz).
-- Ein Symbol fasst zwei Zeichen zusammen. Dazu werden die entsprechenden
-  Frequenzen gleichzeitig ausgesendet. Bei 20 Symbolen pro Sekunde können so
-  etwa 40 Zeichen pro Sekunde übertragen werden.
+- Der Sender überträgt zu Beginn einen zufälligen achtstelligen Schlüssel mit
+  10 Zeichen pro Sekunde. Dieser Schlüssel legt eine zufällige Zuordnung der
+  Zeichen zu den verfügbaren Frequenzen fest und dient gleichzeitig der
+  Verschlüsselung des Textes.
+- Die eigentliche Nachricht wird anschließend mit 20 Zeichen pro Sekunde
+  übertragen. Pro Symbol wird nur eine Frequenz gesendet.
 - Für die Erkennung der Frequenzen kommt ein Hanning-Fenster zum Einsatz, was
   auch bei kürzeren Symboldauern stabile Ergebnisse liefert.
+- Fällt bei der Dekodierung ein ungültiges Zeichen an, wird es verworfen, um
+  Abbrüche bei der Entschlüsselung zu vermeiden.
 
 Weitere Details lassen sich direkt in den beiden Skripten nachlesen.
