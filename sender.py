@@ -16,10 +16,13 @@ freq_to_char = {v: k for k, v in char_to_freq.items()}  # Inverse Zuordnung für
 
 # Parameter
 sample_rate = 44100  # Abtastrate
-clock_freq = 2900  # Frequenz für Takt
-baud_rate = 10     # Baudrate in Zeichen pro Sekunde
+clock_freq = 2900    # Frequenz für Takt
+baud_rate = 20       # Symbole pro Sekunde (je zwei Zeichen)
+symbol_duration = 1 / baud_rate
+half_duration = symbol_duration / 2
+pair_size = 2        # Anzahl der Zeichen pro Symbol
 start_marker_freq = 3000  # Startmarker Frequenz
-end_marker_freq = 3100   # Endmarker Frequenz
+end_marker_freq = 3100    # Endmarker Frequenz
 
 # Funktion, um ein Signal für eine Frequenz zu erzeugen
 def generate_signal(frequency, duration):
@@ -30,35 +33,41 @@ def generate_signal(frequency, duration):
 def send_message(message):
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paFloat32, channels=1, rate=sample_rate, output=True)
-    message = message.replace("ß", "SS").replace("!", ".")   # Ersetze "ß" durch "SS" und "!" durch "."
+    # Nachricht kann Umlaute und ß enthalten
     total_chars = len(message)
 
     # Vorverarbeitung der Nachricht:
     # Sende Startmarker
-    start_signal = generate_signal(start_marker_freq, 1 / (2 * baud_rate))
+    start_signal = generate_signal(start_marker_freq, half_duration)
     stream.write(start_signal.astype(np.float32).tobytes())
 
     with alive_bar(total_chars, title="Sende", spinner="dots") as bar:
-        for char in message:
-            # Zeichen in Frequenz umwandeln
-            char_freq = char_to_freq.get(char.upper(), None)  # Umwandeln auf Großbuchstaben und prüfen
-            if char_freq is None:
-                print(f"Ungültiges Zeichen '{char}' gefunden. Wird übersprungen.")
-                continue  # Ungültige Zeichen überspringen
+        i = 0
+        while i < total_chars:
+            chunk = message[i:i + pair_size]
+
+            char_freqs = []
+            for char in chunk:
+                freq = char_to_freq.get(char.upper())
+                if freq is None:
+                    print(f"Ungültiges Zeichen '{char}' gefunden. Wird übersprungen.")
+                else:
+                    char_freqs.append(freq)
 
             # Sende Takt-Signal
-            clock_signal = generate_signal(clock_freq, 1 / (2 * baud_rate))
+            clock_signal = generate_signal(clock_freq, half_duration)
             stream.write(clock_signal.astype(np.float32).tobytes())
 
-            # Sende Zeichen-Frequenz
-            char_signal = generate_signal(char_freq, 1 / baud_rate)
-            stream.write(char_signal.astype(np.float32).tobytes())
+            if char_freqs:
+                combined = sum(generate_signal(f, half_duration) for f in char_freqs) / len(char_freqs)
+                stream.write(combined.astype(np.float32).tobytes())
 
-            # Fortschrittsanzeige aktualisieren
-            bar()
+            for _ in range(len(chunk)):
+                bar()
+            i += pair_size
 
     # Sende Endmarker
-    end_signal = generate_signal(end_marker_freq, 1 / baud_rate)
+    end_signal = generate_signal(end_marker_freq, half_duration)
     stream.write(end_signal.astype(np.float32).tobytes())
 
     stream.stop_stream()
