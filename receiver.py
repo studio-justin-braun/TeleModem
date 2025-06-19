@@ -15,20 +15,24 @@ freq_to_char = {v: k for k, v in char_to_freq.items()}  # Inverse Zuordnung
 
 # Parameter
 sample_rate = 44100  # Abtastrate
-clock_freq = 2900  # Frequenz für Takt
-baud_rate = 10     # Baudrate in Zeichen pro Sekunde
-tolerance = 20     # Toleranz für Frequenzabgleich
+clock_freq = 2900    # Frequenz für Takt
+baud_rate = 20       # Symbole pro Sekunde (je zwei Zeichen)
+symbol_duration = 1 / baud_rate
+half_duration = symbol_duration / 2
+pair_size = 2        # Anzahl der Zeichen pro Symbol
+tolerance = 20       # Toleranz für Frequenzabgleich
+samples_per_half = int(sample_rate * half_duration)
 start_marker_freq = 3000  # Startmarker Frequenz
 end_marker_freq = 3100   # Endmarker Frequenz
 
 # Funktion, um Frequenzen zu erkennen
-def detect_frequency(signal):
-    fft = np.fft.fft(signal)
-    frequencies = np.fft.fftfreq(len(fft), 1 / sample_rate)
+def detect_frequencies(signal, n=pair_size):
+    window = np.hanning(len(signal))
+    fft = np.fft.rfft(signal * window)
+    frequencies = np.fft.rfftfreq(len(signal), 1 / sample_rate)
     magnitudes = np.abs(fft)
-    index_max = np.argmax(magnitudes)
-    detected_freq = abs(frequencies[index_max])
-    return detected_freq
+    top_indices = magnitudes.argsort()[-n:][::-1]
+    return [frequencies[i] for i in top_indices]
 
 # Funktion, um Zeichen anhand der Frequenz zu identifizieren
 def match_char(frequency):
@@ -40,15 +44,17 @@ def match_char(frequency):
 # Funktion zum Empfang der Nachricht
 def receive_message():
     p = pyaudio.PyAudio()
-    stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate, input=True, frames_per_buffer=512)
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate,
+                    input=True, frames_per_buffer=samples_per_half)
     print("\nWarte auf Nachricht...")
 
     message = []
     clock_detected = False
 
     while True:
-        data = np.frombuffer(stream.read(2048), dtype=np.int16)
-        detected_freq = detect_frequency(data)
+        data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
+        detected_freqs = detect_frequencies(data, 1)
+        detected_freq = detected_freqs[0]
 
         # Prüfen auf Startmarker
         if abs(detected_freq - start_marker_freq) <= tolerance:
@@ -69,12 +75,15 @@ def receive_message():
 
         # Zeichen identifizieren, wenn ein Clock-Signal erkannt wurde
         if clock_detected:
-            char = match_char(detected_freq)
+            data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
+            freqs = detect_frequencies(data, pair_size)
             clock_detected = False
 
-            if char:
-                message.append(char)
-                print(f"Empfangen: {char}", end="\r", flush=True)
+            for f in freqs:
+                char = match_char(f)
+                if char:
+                    message.append(char)
+                    print(f"Empfangen: {''.join(message)}", end="\r", flush=True)
 
     stream.stop_stream()
     stream.close()
