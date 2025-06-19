@@ -15,20 +15,23 @@ freq_to_char = {v: k for k, v in char_to_freq.items()}  # Inverse Zuordnung
 
 # Parameter
 sample_rate = 44100  # Abtastrate
-clock_freq = 2900  # Frequenz für Takt
-baud_rate = 10     # Baudrate in Zeichen pro Sekunde
-tolerance = 20     # Toleranz für Frequenzabgleich
+clock_freq = 2900    # Frequenz für Takt
+baud_rate = 20       # Zeichen pro Sekunde
+symbol_duration = 1 / baud_rate
+half_duration = symbol_duration / 2
+tolerance = 20       # Toleranz für Frequenzabgleich
+samples_per_half = int(sample_rate * half_duration)
 start_marker_freq = 3000  # Startmarker Frequenz
 end_marker_freq = 3100   # Endmarker Frequenz
 
 # Funktion, um Frequenzen zu erkennen
 def detect_frequency(signal):
-    fft = np.fft.fft(signal)
-    frequencies = np.fft.fftfreq(len(fft), 1 / sample_rate)
+    window = np.hanning(len(signal))
+    fft = np.fft.rfft(signal * window)
+    frequencies = np.fft.rfftfreq(len(signal), 1 / sample_rate)
     magnitudes = np.abs(fft)
     index_max = np.argmax(magnitudes)
-    detected_freq = abs(frequencies[index_max])
-    return detected_freq
+    return frequencies[index_max]
 
 # Funktion, um Zeichen anhand der Frequenz zu identifizieren
 def match_char(frequency):
@@ -40,14 +43,15 @@ def match_char(frequency):
 # Funktion zum Empfang der Nachricht
 def receive_message():
     p = pyaudio.PyAudio()
-    stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate, input=True, frames_per_buffer=512)
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate,
+                    input=True, frames_per_buffer=samples_per_half)
     print("\nWarte auf Nachricht...")
 
     message = []
     clock_detected = False
 
     while True:
-        data = np.frombuffer(stream.read(2048), dtype=np.int16)
+        data = np.frombuffer(stream.read(samples_per_half, exception_on_overflow=False), dtype=np.int16)
         detected_freq = detect_frequency(data)
 
         # Prüfen auf Startmarker

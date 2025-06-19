@@ -3,10 +3,10 @@
 TeleModem ist ein einfaches Python-Projekt, das Textnachrichten über akustische
 Frequenzen überträgt. Das Repository enthält zwei Skripte:
 
-* **sender.py**  – kodiert eine eingegebene Nachricht in Tonsignale und gibt sie über
-das Wiedergabegerät aus.
+* **sender.py**  – kodiert eine eingegebene Nachricht in Tonsignale und gibt sie
+  über das Wiedergabegerät aus.
 * **receiver.py** – empfängt Tonsignale vom Mikrofon, dekodiert die
-Frequenzen und stellt daraus die ursprüngliche Nachricht wieder her.
+  Frequenzen und stellt daraus die ursprüngliche Nachricht wieder her.
 
 ## Voraussetzungen
 
@@ -44,6 +44,9 @@ pip install pyaudio numpy alive_progress
   Empfänger die darauffolgende Information richtig zuordnet.
 - Eine Übertragung beginnt mit einem Startmarker (3000 Hz) und endet mit einem
   Endmarker (3100 Hz).
-- Die Baudrate beträgt 10 Zeichen pro Sekunde.
+- Die Baudrate beträgt standardmäßig 20 Zeichen pro Sekunde und kann in den
+  Skripten angepasst werden.
+- Für die Erkennung der Frequenzen kommt ein Hanning-Fenster zum Einsatz, was
+  auch bei kürzeren Symboldauern stabile Ergebnisse liefert.
 
 Weitere Details lassen sich direkt in den beiden Skripten nachlesen.
