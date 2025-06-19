@@ -1,5 +1,7 @@
 import pyaudio
 import numpy as np
+import secrets
+import random
 from alive_progress import alive_bar
 
 # Frequenzzuweisung für Zeichen
@@ -15,11 +17,15 @@ char_to_freq = {
 freq_to_char = {v: k for k, v in char_to_freq.items()}  # Inverse Zuordnung für den Empfänger
 
 # Parameter
-sample_rate = 44100  # Abtastrate
-clock_freq = 2900  # Frequenz für Takt
-baud_rate = 10     # Baudrate in Zeichen pro Sekunde
+sample_rate = 44100   # Abtastrate
+clock_freq = 2900     # Frequenz für Takt
+baud_rate = 20        # Zeichen pro Sekunde
+key_baud_rate = 10    # Übertragungsrate für den Schlüssel
+symbol_duration = 1 / baud_rate
+half_duration = symbol_duration / 2
 start_marker_freq = 3000  # Startmarker Frequenz
-end_marker_freq = 3100   # Endmarker Frequenz
+end_marker_freq = 3100    # Endmarker Frequenz
+key_length = 8            # Länge des Schlüssels (Hex-Zeichen)
 
 # Funktion, um ein Signal für eine Frequenz zu erzeugen
 def generate_signal(frequency, duration):
@@ -27,44 +33,64 @@ def generate_signal(frequency, duration):
     return np.sin(2 * np.pi * frequency * t)
 
 # Funktion zum Senden der Nachricht
-def send_message(message):
-    p = pyaudio.PyAudio()
-    stream = p.open(format=pyaudio.paFloat32, channels=1, rate=sample_rate, output=True)
-    message = message.replace("ß", "SS").replace("!", ".")   # Ersetze "ß" durch "SS" und "!" durch "."
-    total_chars = len(message)
+def shuffle_mapping(key):
+    rng = random.Random(key)
+    freqs = list(char_to_freq.values())
+    rng.shuffle(freqs)
+    mapping = dict(zip(char_to_freq.keys(), freqs))
+    return mapping
 
-    # Vorverarbeitung der Nachricht:
-    # Sende Startmarker
-    start_signal = generate_signal(start_marker_freq, 1 / (2 * baud_rate))
-    stream.write(start_signal.astype(np.float32).tobytes())
 
-    with alive_bar(total_chars, title="Sende", spinner="dots") as bar:
-        for char in message:
-            # Zeichen in Frequenz umwandeln
-            char_freq = char_to_freq.get(char.upper(), None)  # Umwandeln auf Großbuchstaben und prüfen
-            if char_freq is None:
-                print(f"Ungültiges Zeichen '{char}' gefunden. Wird übersprungen.")
-                continue  # Ungültige Zeichen überspringen
+def encrypt(text, key):
+    rng = random.Random(key)
+    encrypted = [f"{c ^ rng.randrange(256):02X}" for c in text.encode("utf-8")]
+    return "".join(encrypted)
 
-            # Sende Takt-Signal
-            clock_signal = generate_signal(clock_freq, 1 / (2 * baud_rate))
-            stream.write(clock_signal.astype(np.float32).tobytes())
 
-            # Sende Zeichen-Frequenz
-            char_signal = generate_signal(char_freq, 1 / baud_rate)
-            stream.write(char_signal.astype(np.float32).tobytes())
-
-            # Fortschrittsanzeige aktualisieren
+def send_chars(stream, chars, mapping, baud, bar=None):
+    dur = 1 / baud
+    half = dur / 2
+    for ch in chars:
+        freq = mapping.get(ch.upper())
+        if freq is None:
+            print(f"Ungültiges Zeichen '{ch}' gefunden. Wird übersprungen.")
+            continue
+        clock = generate_signal(clock_freq, half)
+        stream.write(clock.astype(np.float32).tobytes())
+        tone = generate_signal(freq, dur)
+        stream.write(tone.astype(np.float32).tobytes())
+        if bar:
             bar()
 
-    # Sende Endmarker
-    end_signal = generate_signal(end_marker_freq, 1 / baud_rate)
+
+def send_message(message):
+    key = secrets.token_hex(key_length // 2).upper()
+    dynamic_map = shuffle_mapping(key)
+    encrypted = encrypt(message, key)
+
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paFloat32, channels=1, rate=sample_rate, output=True)
+
+    # Startsignal
+    start_signal = generate_signal(start_marker_freq, half_duration)
+    stream.write(start_signal.astype(np.float32).tobytes())
+
+    # Schlüssel langsam senden
+    send_chars(stream, key, char_to_freq, key_baud_rate)
+
+    # Nochmals Startmarker vor der eigentlichen Nachricht
+    stream.write(start_signal.astype(np.float32).tobytes())
+
+    with alive_bar(len(encrypted), title="Sende", spinner="dots") as bar:
+        send_chars(stream, encrypted, dynamic_map, baud_rate, bar)
+
+    end_signal = generate_signal(end_marker_freq, half_duration)
     stream.write(end_signal.astype(np.float32).tobytes())
 
     stream.stop_stream()
     stream.close()
     p.terminate()
-    print("\nNachricht erfolgreich gesendet!")
+    print(f"\nNachricht erfolgreich gesendet! Schlüssel: {key}")
 
 # Hauptprogramm
 while True:
